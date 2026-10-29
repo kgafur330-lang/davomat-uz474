@@ -1,4 +1,5 @@
  # Telegram bot — existing student database
+import os
 import time
 import threading
 import requests
