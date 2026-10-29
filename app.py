@@ -263,3 +263,80 @@ if __name__ == "__main__":
     print("DAVOMAT.UZ474: http://127.0.0.1:5000")
     print("Local default login: admin / ChangeMe123! (change it immediately)")
     app.run(host=os.environ.get("HOST","127.0.0.1"), port=int(os.environ.get("PORT","5000")), debug=False)
+
+# ===== TELEGRAM BOT =====
+import threading
+import time
+import json
+import os
+import urllib.request
+import urllib.parse
+
+def start_telegram_bot():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+    if not token:
+        print("TELEGRAM_BOT_TOKEN sozlanmagan!")
+        return
+
+    api = f"https://api.telegram.org/bot{token}/"
+
+    def send_message(chat_id, message):
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": message
+        }).encode()
+
+        req = urllib.request.Request(
+            api + "sendMessage",
+            data=data
+        )
+
+        with urllib.request.urlopen(req, timeout=15) as response:
+            response.read()
+
+    def polling():
+        offset = 0
+
+        while True:
+            try:
+                url = api + "getUpdates?" + urllib.parse.urlencode({
+                    "offset": offset,
+                    "timeout": 25
+                })
+
+                with urllib.request.urlopen(url, timeout=35) as response:
+                    result = json.loads(response.read().decode())
+
+                if not result.get("ok"):
+                    print("Telegram API xatosi")
+                    time.sleep(5)
+                    continue
+
+                for update in result.get("result", []):
+                    offset = update["update_id"] + 1
+                    message = update.get("message", {})
+                    chat = message.get("chat", {})
+                    text = message.get("text", "")
+
+                    if not chat or not text:
+                        continue
+
+                    if text.split()[0] == "/start":
+                        send_message(
+                            chat["id"],
+                            "DAVOMAT.UZ474 botiga xush kelibsiz!\n\n"
+                            "Davomat tizimi:\n"
+                            "https://davomat-uz474.onrender.com\n\n"
+                            "Sayt orqali davomatdan foydalanishingiz mumkin."
+                        )
+
+            except Exception as error:
+                print("Telegram bot xatosi:", error)
+                time.sleep(5)
+
+    threading.Thread(target=polling, daemon=True).start()
+    print("Telegram bot ishga tushdi!")
+
+start_telegram_bot()
+# ===== BOT TUGADI =====
