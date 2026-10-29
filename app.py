@@ -264,79 +264,241 @@ if __name__ == "__main__":
     print("Local default login: admin / ChangeMe123! (change it immediately)")
     app.run(host=os.environ.get("HOST","127.0.0.1"), port=int(os.environ.get("PORT","5000")), debug=False)
 
-# ===== TELEGRAM BOT =====
+
+# ===== DAVOMAT STUDENT TELEGRAM BOT =====
 import threading
 import time
-import json
-import os
 import urllib.request
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 
-def start_telegram_bot():
+UZ_TZ = timezone(timedelta(hours=5))
+BOT_API = "https://api.telegram.org/bot"
+student_steps = {}
+
+def telegram_bot():
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    admin_chat = os.environ.get("TELEGRAM_ADMIN_CHAT_ID", "").strip()
 
     if not token:
         print("TELEGRAM_BOT_TOKEN sozlanmagan!")
         return
 
-    api = f"https://api.telegram.org/bot{token}/"
+    api = BOT_API + token + "/"
 
-    def send_message(chat_id, message):
-        data = urllib.parse.urlencode({
-            "chat_id": chat_id,
-            "text": message
-        }).encode()
+    def call(method, data=None):
+        payload = urllib.parse.urlencode(data or {}).encode()
+        req = urllib.request.Request(api + method, data=payload)
+        with urllib.request.urlopen(req, timeout=35) as response:
+            return json.loads(response.read().decode())
 
-        req = urllib.request.Request(
-            api + "sendMessage",
-            data=data
-        )
+    def send(chat_id, text):
+        call("sendMessage", {"chat_id": chat_id, "text": text})
 
-        with urllib.request.urlopen(req, timeout=15) as response:
-            response.read()
+    # Polling ishlashi uchun webhookni o'chirishga urinadi.
+    try:
+        call("deleteWebhook", {"drop_pending_updates": "false"})
+    except Exception as e:
+        print("Webhook sozlamasi:", e)
+
+    with db() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS telegram_students (
+                student_id TEXT PRIMARY KEY,
+                chat_id TEXT NOT NULL UNIQUE,
+                registered_at TEXT NOT NULL
+            )
+        """)
+
+    def normalize(text):
+        return " ".join((text or "").strip().casefold().split())
+
+    def daily_report():
+        if not admin_chat:
+            return
+        today = datetime.now(UZ_TZ).strftime("%Y-%m-%d")
+        with db() as con:
+            total = con.execute(
+                "SELECT COUNT(*) FROM students WHERE active=1"
+            ).fetchone()[0]
+            present = con.execute(
+                "SELECT COUNT(*) FROM attendance WHERE attendance_date=?",
+                (today,)
+            ).fetchone()[0]
+            rows = con.execute("""
+                SELECT s.student_id, s.full_name, a.attendance_time
+                FROM attendance a
+                JOIN students s USING(student_id)
+                WHERE a.attendance_date=?
+                ORDER BY a.attendance_time
+            """, (today,)).fetchall()
+
+        lines = [
+            "📊 DAVOMAT — KUNLIK HISOBOT",
+            f"📅 Sana: {today}",
+            f"👨‍🎓 Jami faol talabalar: {total}",
+            f"✅ Kelganlar: {present}",
+            f"❌ Kelmaganlar: {max(0, total-present)}",
+            "",
+            "KELGAN TALABALAR:"
+        ]
+        for row in rows[:100]:
+            lines.append(
+                f"{row['student_id']} | {row['full_name']} | "
+                f"{row['attendance_time']}"
+            )
+        if not rows:
+            lines.append("Bugun davomat qayd etilmagan.")
+
+        send(admin_chat, "\n".join(lines))
 
     def polling():
         offset = 0
+        last_report_date = ""
 
         while True:
             try:
-                url = api + "getUpdates?" + urllib.parse.urlencode({
+                now = datetime.now(UZ_TZ)
+                today = now.strftime("%Y-%m-%d")
+
+                # Har kuni Toshkent vaqti bilan 18:00 da hisobot.
+                if now.hour >= 18 and last_report_date != today:
+                    daily_report()
+                    last_report_date = today
+
+                result = call("getUpdates", {
                     "offset": offset,
                     "timeout": 25
                 })
 
-                with urllib.request.urlopen(url, timeout=35) as response:
-                    result = json.loads(response.read().decode())
-
-                if not result.get("ok"):
-                    print("Telegram API xatosi")
-                    time.sleep(5)
-                    continue
-
                 for update in result.get("result", []):
                     offset = update["update_id"] + 1
-                    message = update.get("message", {})
-                    chat = message.get("chat", {})
-                    text = message.get("text", "")
+                    msg = update.get("message", {})
+                    chat = msg.get("chat", {})
+                    chat_id = str(chat.get("id", ""))
+                    text = (msg.get("text") or "").strip()
 
-                    if not chat or not text:
+                    if not chat_id or not text:
                         continue
 
-                    if text.split()[0] == "/start":
-                        send_message(
-                            chat["id"],
-                            "DAVOMAT.UZ474 botiga xush kelibsiz!\n\n"
-                            "Davomat tizimi:\n"
-                            "https://davomat-uz474.onrender.com\n\n"
-                            "Sayt orqali davomatdan foydalanishingiz mumkin."
-                        )
+                    if text == "/id":
+                        send(chat_id, f"Telegram Chat ID: {chat_id}")
+                        continue
 
-            except Exception as error:
-                print("Telegram bot xatosi:", error)
+                    if text.startswith("/start"):
+                        student_steps[chat_id] = "id"
+                        send(
+                            chat_id,
+                            "Assalomu alaykum! DAVOMAT botiga xush "
+                            "kelibsiz.\n\nStudent ID raqamingizni yuboring."
+                        )
+                        continue
+
+                    if text == "/cancel":
+                        student_steps.pop(chat_id, None)
+                        send(chat_id, "Amal bekor qilindi. /start bosing.")
+                        continue
+
+                    step = student_steps.get(chat_id)
+
+                    if step == "id":
+                        sid = text.upper()
+                        with db() as con:
+                            student = con.execute(
+                                "SELECT student_id, full_name FROM students "
+                                "WHERE student_id=? AND active=1",
+                                (sid,)
+                            ).fetchone()
+
+                        if not student:
+                            send(
+                                chat_id,
+                                "Bu Student ID topilmadi. ID ni tekshirib, "
+                                "qaytadan yuboring."
+                            )
+                            continue
+
+                        student_steps[chat_id] = {
+                            "step": "name",
+                            "student_id": sid
+                        }
+                        send(
+                            chat_id,
+                            "Endi ism-familiyangizni bazadagi kabi yuboring:\n"
+                            + student["full_name"]
+                        )
+                        continue
+
+                    if isinstance(step, dict) and step.get("step") == "name":
+                        sid = step["student_id"]
+                        with db() as con:
+                            student = con.execute(
+                                "SELECT full_name FROM students "
+                                "WHERE student_id=? AND active=1",
+                                (sid,)
+                            ).fetchone()
+
+                            if not student or normalize(text) != normalize(
+                                student["full_name"]
+                            ):
+                                send(
+                                    chat_id,
+                                    "Ism-familiya mos kelmadi. Qaytadan "
+                                    "boshlash uchun /start bosing."
+                                )
+                                student_steps.pop(chat_id, None)
+                                continue
+
+                            existing = con.execute(
+                                "SELECT chat_id FROM telegram_students "
+                                "WHERE student_id=? OR chat_id=?",
+                                (sid, chat_id)
+                            ).fetchone()
+
+                            if existing and (
+                                existing["chat_id"] != chat_id
+                            ):
+                                send(
+                                    chat_id,
+                                    "Bu Student ID boshqa Telegram "
+                                    "akkauntiga bog'langan. Administratorga "
+                                    "murojaat qiling."
+                                )
+                                student_steps.pop(chat_id, None)
+                                continue
+
+                            con.execute("""
+                                INSERT INTO telegram_students
+                                (student_id, chat_id, registered_at)
+                                VALUES (?, ?, ?)
+                                ON CONFLICT(student_id) DO UPDATE SET
+                                chat_id=excluded.chat_id
+                            """, (
+                                sid, chat_id,
+                                datetime.now(UZ_TZ).isoformat()
+                            ))
+
+                        student_steps.pop(chat_id, None)
+                        send(
+                            chat_id,
+                            "✅ Ro'yxatdan o'tdingiz!\n"
+                            f"Student ID: {sid}\n"
+                            f"F.I.Sh.: {student['full_name']}\n\n"
+                            "Davomat kamera orqali saytning o'zida "
+                            "qayd etiladi. Botga /start yuborib "
+                            "qayta boshlashingiz mumkin."
+                        )
+                        continue
+
+                    send(chat_id, "Boshlash uchun /start bosing.")
+
+            except Exception as e:
+                print("Telegram bot xatosi:", repr(e))
                 time.sleep(5)
 
     threading.Thread(target=polling, daemon=True).start()
-    print("Telegram bot ishga tushdi!")
+    print("DAVOMAT Telegram bot ishga tushdi!")
 
-start_telegram_bot()
+telegram_bot()
 # ===== BOT TUGADI =====
+ 
