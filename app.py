@@ -1,33 +1,34 @@
-# ===== DAVOMAT.UZ474 TELEGRAM BOT =====
 import os
+import time
 import threading
 import requests
-import time
+from flask import Flask
 
-def start_telegram_bot():
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        print("TELEGRAM_BOT_TOKEN topilmadi")
-        return
+app = Flask(__name__)
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+API = f"https://api.telegram.org/bot{TOKEN}/"
 
-    api = f"https://api.telegram.org/bot{token}"
+@app.route("/")
+def home():
+    return "DAVOMAT.UZ474 ishlayapti!"
+
+def bot():
     offset = 0
-
     while True:
         try:
             updates = requests.get(
-                api + "/getUpdates",
+                API + "getUpdates",
                 params={"offset": offset, "timeout": 25},
                 timeout=35
             ).json()
 
-            for update in updates.get("result", []):
-                offset = update["update_id"] + 1
-                message = update.get("message", {})
-                chat_id = message.get("chat", {}).get("id")
-                text = message.get("text", "").strip()
+            for u in updates.get("result", []):
+                offset = u["update_id"] + 1
+                m = u.get("message", {})
+                chat = m.get("chat", {}).get("id")
+                text = m.get("text", "").strip()
 
-                if not chat_id:
+                if not chat:
                     continue
 
                 if text == "/start":
@@ -36,24 +37,22 @@ def start_telegram_bot():
                         "Student ID raqamingizni yuboring."
                     )
                 elif text == "/help":
-                    answer = "/start — botni boshlash\n"
+                    answer = "Botni boshlash uchun /start bosing."
                 else:
                     answer = (
-                        "ID qabul qilindi: " + text +
-                        "\n\nTalaba ma’lumotlarini tekshirish "
-                        "uchun universitet bazasi bilan ulanish kerak."
+                        f"ID qabul qilindi: {text}\n\n"
+                        "ID bazadan tekshirish funksiyasi "
+                        "hali ulanmagan."
                     )
 
                 requests.post(
-                    api + "/sendMessage",
-                    data={"chat_id": chat_id, "text": answer},
+                    API + "sendMessage",
+                    data={"chat_id": chat, "text": answer},
                     timeout=15
                 )
-
         except Exception as e:
-            print("Telegram bot xatosi:", e)
+            print("Bot xatosi:", e)
             time.sleep(5)
 
-if os.getenv("RUN_TELEGRAM_BOT") == "1":
-    threading.Thread(target=start_telegram_bot, daemon=True).start()
-# ===== BOT KODI TUGADI =====
+if TOKEN and os.getenv("RUN_TELEGRAM_BOT") == "1":
+    threading.Thread(target=bot, daemon=True).start()
