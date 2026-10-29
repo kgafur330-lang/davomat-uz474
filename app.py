@@ -3,6 +3,13 @@ import os
 import time
 import threading
 import requests
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "DAVOMAT.UZ474 ishlayapti!"
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/" if TELEGRAM_TOKEN else ""
